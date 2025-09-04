@@ -1,3 +1,17 @@
+# Copyright 2023 The Qwen team, Alibaba Group. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import json
 import os
 import re
@@ -20,6 +34,23 @@ def clean_paragraph(text):
     text = rm_hexadecimal(text)
     text = rm_continuous_placeholders(text)
     return text
+
+
+class DocParserError(Exception):
+
+    def __init__(self,
+                 exception: Optional[Exception] = None,
+                 code: Optional[str] = None,
+                 message: Optional[str] = None,
+                 extra: Optional[dict] = None):
+        if exception is not None:
+            super().__init__(exception)
+        else:
+            super().__init__(f'\nError code: {code}. Error message: {message}')
+        self.exception = exception
+        self.code = code
+        self.message = message
+        self.extra = extra
 
 
 PARAGRAPH_SPLIT_SYMBOL = '\n'
@@ -51,7 +82,12 @@ def parse_ppt(path: str, extract_image: bool = False):
         raise ValueError('Currently, extracting images is not supported!')
 
     from pptx import Presentation
-    ppt = Presentation(path)
+    from pptx.exc import PackageNotFoundError
+    try:
+        ppt = Presentation(path)
+    except PackageNotFoundError as ex:
+        logger.warning(ex)
+        return []
     doc = []
     for slide_number, slide in enumerate(ppt.slides):
         page = {'page_num': slide_number + 1, 'content': []}
@@ -133,7 +169,12 @@ def parse_csv(file_path: str, extract_image: bool = False) -> List[dict]:
 
     import pandas as pd
     md_tables = []
-    df = pd.read_csv(file_path, encoding_errors='replace', on_bad_lines='skip')
+    try:
+        df = pd.read_csv(file_path, encoding_errors='replace', on_bad_lines='skip')
+    except Exception as ex:
+        # Directly converted from Excel
+        logger.warning(ex)
+        return parse_excel(file_path, extract_image)
     md_table = df_to_md(df)
     md_tables.append(md_table)  # There is only one table available
 
@@ -146,8 +187,12 @@ def parse_tsv(file_path: str, extract_image: bool = False) -> List[dict]:
 
     import pandas as pd
     md_tables = []
-
-    df = pd.read_csv(file_path, sep='\t', encoding_errors='replace', on_bad_lines='skip')
+    try:
+        df = pd.read_csv(file_path, sep='\t', encoding_errors='replace', on_bad_lines='skip')
+    except Exception as ex:
+        # Directly converted from Excel
+        logger.warning(ex)
+        return parse_excel(file_path, extract_image)
     md_table = df_to_md(df)
     md_tables.append(md_table)  # There is only one table available
 
@@ -269,7 +314,8 @@ def postprocess_page_content(page_content: list) -> list:
                 p.get('font-size', 12) -
                 new_page_content[-1].get('font-size', 12)) < 2 and p['obj'].height < p.get('font-size', 12) + 1:
             # Merge those lines belonging to a paragraph
-            new_page_content[-1]['text'] += f' {p["text"]}'
+            _p = p['text']
+            new_page_content[-1]['text'] += f' {_p}'
             # new_page_content[-1]['font-name'] = p.get('font-name', '')
             new_page_content[-1]['font-size'] = p.get('font-size', 12)
         else:
@@ -334,13 +380,17 @@ def get_plain_doc(doc: list):
 
 @register_tool('simple_doc_parser')
 class SimpleDocParser(BaseTool):
-    description = f'提取出一个文档的内容，支持类型包括：{"/".join(PARSER_SUPPORTED_FILE_TYPES)}'
-    parameters = [{
-        'name': 'url',
-        'type': 'string',
-        'description': '待提取的文件的路径，可以是一个本地路径或可下载的http(s)链接',
-        'required': True
-    }]
+    description = f"提取出一个文档的内容，支持类型包括：{' / '.join(PARSER_SUPPORTED_FILE_TYPES)}"
+    parameters = {
+        'type': 'object',
+        'properties': {
+            'url': {
+                'description': '待提取的文件的路径，可以是一个本地路径或可下载的http(s)链接',
+                'type': 'string',
+            }
+        },
+        'required': ['url'],
+    }
 
     def __init__(self, cfg: Optional[Dict] = None):
         super().__init__(cfg)
@@ -396,27 +446,32 @@ class SimpleDocParser(BaseTool):
                 tmp_file_root = os.path.join(self.data_root, hash_sha256(path))
                 os.makedirs(tmp_file_root, exist_ok=True)
                 path = save_url_to_local_work_dir(path, tmp_file_root)
+            try:
+                if f_type == 'pdf':
+                    parsed_file = parse_pdf(path, self.extract_image)
+                elif f_type == 'docx':
+                    parsed_file = parse_word(path, self.extract_image)
+                elif f_type == 'pptx':
+                    parsed_file = parse_ppt(path, self.extract_image)
+                elif f_type == 'txt':
+                    parsed_file = parse_txt(path)
+                elif f_type == 'html':
+                    parsed_file = parse_html_bs(path, self.extract_image)
+                elif f_type == 'csv':
+                    parsed_file = parse_csv(path, self.extract_image)
+                elif f_type == 'tsv':
+                    parsed_file = parse_tsv(path, self.extract_image)
+                elif f_type in ['xlsx', 'xls']:
+                    parsed_file = parse_excel(path, self.extract_image)
+                else:
+                    _t = '/'.join(PARSER_SUPPORTED_FILE_TYPES)
+                    raise ValueError(
+                        f'Failed: The current parser does not support this file type! Supported types: {_t}')
+            except Exception as ex:
+                exception_type = type(ex).__name__
+                exception_message = str(ex)
+                raise DocParserError(code=exception_type, message=exception_message)
 
-            if f_type == 'pdf':
-                parsed_file = parse_pdf(path, self.extract_image)
-            elif f_type == 'docx':
-                parsed_file = parse_word(path, self.extract_image)
-            elif f_type == 'pptx':
-                parsed_file = parse_ppt(path, self.extract_image)
-            elif f_type == 'txt':
-                parsed_file = parse_txt(path)
-            elif f_type == 'html':
-                parsed_file = parse_html_bs(path, self.extract_image)
-            elif f_type == 'csv':
-                parsed_file = parse_csv(path, self.extract_image)
-            elif f_type == 'tsv':
-                parsed_file = parse_tsv(path, self.extract_image)
-            elif f_type in ['xlsx', 'xls']:
-                parsed_file = parse_excel(path, self.extract_image)
-            else:
-                raise ValueError(
-                    f'Failed: The current parser does not support this file type! Supported types: {"/".join(PARSER_SUPPORTED_FILE_TYPES)}'
-                )
             for page in parsed_file:
                 for para in page['content']:
                     # Todo: More attribute types

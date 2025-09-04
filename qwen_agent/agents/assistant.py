@@ -1,3 +1,17 @@
+# Copyright 2023 The Qwen team, Alibaba Group. All rights reserved.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#    http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import copy
 import datetime
 import json
@@ -5,7 +19,7 @@ from typing import Dict, Iterator, List, Literal, Optional, Union
 
 from qwen_agent.agents.fncall_agent import FnCallAgent
 from qwen_agent.llm import BaseChatModel
-from qwen_agent.llm.schema import CONTENT, DEFAULT_SYSTEM_MESSAGE, ROLE, SYSTEM, Message
+from qwen_agent.llm.schema import CONTENT, DEFAULT_SYSTEM_MESSAGE, ROLE, SYSTEM, ContentItem, Message
 from qwen_agent.log import logger
 from qwen_agent.tools import BaseTool
 from qwen_agent.utils.utils import get_basename_from_url, print_traceback
@@ -124,8 +138,12 @@ class Assistant(FnCallAgent):
             knowledge_prompt = KNOWLEDGE_TEMPLATE[lang].format(knowledge='\n\n'.join(snippets))
 
         if knowledge_prompt:
-            if messages[0][ROLE] == SYSTEM:
-                messages[0][CONTENT] += '\n\n' + knowledge_prompt
+            if messages and messages[0][ROLE] == SYSTEM:
+                if isinstance(messages[0][CONTENT], str):
+                    messages[0][CONTENT] += '\n\n' + knowledge_prompt
+                else:
+                    assert isinstance(messages[0][CONTENT], list)
+                    messages[0][CONTENT] += [ContentItem(text='\n\n' + knowledge_prompt)]
             else:
                 messages = [Message(role=SYSTEM, content=knowledge_prompt)] + messages
         return messages

@@ -1,3 +1,17 @@
+# Copyright 2023 The Qwen team, Alibaba Group. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import copy
 import logging
 import os
@@ -6,7 +20,7 @@ from typing import Dict, Iterator, List, Optional
 
 import openai
 
-from qwen_agent.utils.utils import build_text_completion_prompt
+from qwen_agent.utils.utils import format_as_text_message
 
 if openai.__version__.startswith('0.'):
     from openai.error import OpenAIError  # noqa
@@ -15,7 +29,7 @@ else:
 
 from qwen_agent.llm.base import ModelServiceError, register_llm
 from qwen_agent.llm.function_calling import BaseFnCallModel
-from qwen_agent.llm.schema import ASSISTANT, Message
+from qwen_agent.llm.schema import ASSISTANT, FunctionCall, Message
 from qwen_agent.log import logger
 
 
@@ -88,18 +102,67 @@ class TextChatAtOAI(BaseFnCallModel):
         generate_cfg: dict,
     ) -> Iterator[List[Message]]:
         messages = self.convert_messages_to_dicts(messages)
+        logger.debug(f'LLM Input generate_cfg: \n{generate_cfg}')
         try:
             response = self._chat_complete_create(model=self.model, messages=messages, stream=True, **generate_cfg)
             if delta_stream:
                 for chunk in response:
-                    if chunk.choices and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                        yield [Message(ASSISTANT, chunk.choices[0].delta.content)]
+                    if chunk.choices:
+                        if hasattr(chunk.choices[0].delta,
+                                   'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                            yield [
+                                Message(role=ASSISTANT,
+                                        content='',
+                                        reasoning_content=chunk.choices[0].delta.reasoning_content)
+                            ]
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                            yield [Message(role=ASSISTANT, content=chunk.choices[0].delta.content)]
             else:
                 full_response = ''
+                full_reasoning_content = ''
+                full_tool_calls = []
                 for chunk in response:
-                    if chunk.choices and hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
-                        full_response += chunk.choices[0].delta.content
-                        yield [Message(ASSISTANT, full_response)]
+                    if chunk.choices:
+                        if hasattr(chunk.choices[0].delta,
+                                   'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                            full_reasoning_content += chunk.choices[0].delta.reasoning_content
+                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content:
+                            full_response += chunk.choices[0].delta.content
+                        if hasattr(chunk.choices[0].delta, 'tool_calls') and chunk.choices[0].delta.tool_calls:
+                            for tc in chunk.choices[0].delta.tool_calls:
+                                if full_tool_calls and (not tc.id or
+                                                        tc.id == full_tool_calls[-1]['extra']['function_id']):
+                                    if tc.function.name:
+                                        full_tool_calls[-1]['function_call']['name'] += tc.function.name
+                                    if tc.function.arguments:
+                                        full_tool_calls[-1]['function_call']['arguments'] += tc.function.arguments
+                                else:
+                                    full_tool_calls.append({
+                                        'function_call': {
+                                            "name": tc.function.name,
+                                            "arguments": tc.function.arguments or ''
+                                        },
+                                        'extra': {'function_id': tc.id}
+                                    })
+
+                        res = []
+                        if full_reasoning_content:
+                            res.append(Message(role=ASSISTANT, content='', reasoning_content=full_reasoning_content))
+                        if full_response:
+                            res.append(Message(
+                                role=ASSISTANT,
+                                content=full_response,
+                            ))
+                        yield res
+                if full_tool_calls:
+                    for full_tool_call in full_tool_calls:
+                        res.append(Message(
+                            role=ASSISTANT,
+                            content='',
+                            function_call=FunctionCall(**full_tool_call['function_call']),
+                            extra=full_tool_call['extra']
+                        ))
+                    yield res
         except OpenAIError as ex:
             raise ModelServiceError(exception=ex)
 
@@ -111,58 +174,25 @@ class TextChatAtOAI(BaseFnCallModel):
         messages = self.convert_messages_to_dicts(messages)
         try:
             response = self._chat_complete_create(model=self.model, messages=messages, stream=False, **generate_cfg)
-            return [Message(ASSISTANT, response.choices[0].message.content)]
+            if hasattr(response.choices[0].message, 'reasoning_content'):
+                return [
+                    Message(role=ASSISTANT,
+                            content=response.choices[0].message.content,
+                            reasoning_content=response.choices[0].message.reasoning_content)
+                ]
+            else:
+                return [Message(role=ASSISTANT, content=response.choices[0].message.content)]
         except OpenAIError as ex:
             raise ModelServiceError(exception=ex)
 
-    def _continue_assistant_response(
-        self,
-        messages: List[Message],
-        generate_cfg: dict,
-        stream: bool,
-    ) -> Iterator[List[Message]]:
-        if ('qwen' in self.model) and ('vl' not in self.model):
-            # We can call the completion interface according to the chat template of Qwen
-            # Only support for text llm
-            try:
-                return self._continue_assistant_response_by_completion(messages=messages,
-                                                                       generate_cfg=generate_cfg,
-                                                                       stream=stream)
-            except OpenAIError:
-                logger.warning(
-                    'This OAI interface does not support the completion interface, we will use the chat completion interface.'
-                )
-
-        # For other models, the chat templates is uncertain, so use dialogue simulation to completion
-        return super()._continue_assistant_response(messages=messages, generate_cfg=generate_cfg, stream=stream)
-
-    def _continue_assistant_response_by_completion(
-        self,
-        messages: List[Message],
-        generate_cfg: dict,
-        stream: bool,
-    ) -> Iterator[List[Message]]:
-        prompt = build_text_completion_prompt(messages)
-        logger.debug(f'LLM Input:\n{pformat(prompt, indent=2)}')
-        response = self._complete_create(model=self.model, prompt=prompt, stream=True, **generate_cfg)
-        it = self._full_stream_output(response)
-        if stream:
-            return it  # streaming the response
-        else:
-            *_, final_response = it  # return the final response without streaming
-            return final_response
-
-    @staticmethod
-    def _full_stream_output(response) -> Iterator[List[Message]]:
-        full_response = ''
-        for chunk in response:
-            if chunk.choices and hasattr(chunk.choices[0], 'text') and chunk.choices[0].text:
-                full_response += chunk.choices[0].text
-                yield [Message(ASSISTANT, full_response)]
-
-    @staticmethod
-    def convert_messages_to_dicts(messages: List[Message]) -> List[dict]:
+    def convert_messages_to_dicts(self, messages: List[Message]) -> List[dict]:
+        # TODO: Change when the VLLM deployed model needs to pass reasoning_complete.
+        #  At this time, in order to be compatible with lower versions of vLLM,
+        #  and reasoning content is currently not useful
+        messages = [format_as_text_message(msg, add_upload_info=False) for msg in messages]
         messages = [msg.model_dump() for msg in messages]
+        messages = self._conv_qwen_agent_messages_to_oai(messages)
+
         if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(f'LLM Input:\n{pformat(messages, indent=2)}')
+            logger.debug(f'LLM Input: \n{pformat(messages, indent=2)}')
         return messages
