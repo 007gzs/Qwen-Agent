@@ -45,10 +45,11 @@ Qwen-Agent是一个开发框架。开发者可基于本框架开发Agent应用�
 
 - 从 PyPI 安装稳定版本：
 ```bash
-pip install -U "qwen-agent[rag,code_interpreter,gui,mcp]"
+pip install -U "qwen-agent[rag,code_interpreter,gui,mcp,apiserver]"
 # 或者，使用 `pip install -U qwen-agent` 来安装最小依赖。
 # 可使用双括号指定如下的可选依赖：
 #   [gui] 用于提供基于 Gradio 的 GUI 支持；
+#   [apiserver] 用于提供apiserver的支持；
 #   [rag] 用于支持 RAG；
 #   [code_interpreter] 用于提供代码解释器相关支持；
 #   [mcp] 用于支持 MCP。
@@ -173,6 +174,18 @@ WebUI(bot).run()  # bot is the agent defined in the above code, we do not repeat
 ```
 
 现在您可以在Web UI中和Agent对话了。更多使用示例，请参阅[examples](./examples)目录。
+
+如果需要提供api接口，可以使用以下代码快速启动apiserver：
+
+```py
+from qwen_agent.api import ChatApi
+ChatApi(bot).run_apiserver()  # bot is the agent defined in the above code, we do not repeat the definition here for saving space.
+```
+现在您可以通过api接口和Agent对话了。
+
+```
+curl -vvv http://127.0.0.1:8080/chat -H "Content-Type: application/json" -d '{"messages": [{"role":"user","content":"介绍一下自己"}],"stream":true}'
+```
 
 # FAQ
 ## 如何使用MCP？

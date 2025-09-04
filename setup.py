@@ -120,6 +120,9 @@ setup(
             'gradio-client==1.8.0',
             'modelscope_studio==1.1.7',
         ],
+        'apiserver': [
+            'flask>=3'
+        ],
     },
     url='https://github.com/QwenLM/Qwen-Agent',
 )
