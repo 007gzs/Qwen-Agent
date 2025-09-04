@@ -397,7 +397,25 @@ class BaseChatModel(ABC):
         generate_cfg: Optional[Dict] = None,
     ) -> Union[List[Message], List[Dict], Iterator[List[Message]], Iterator[List[Dict]]]:
         if functions and functions[0].get('type') != 'function':
-            functions = [{'type': 'function', 'function': f} for f in functions]
+            new_functions = []
+            for f in functions:
+                parameters = f.get("parameters", None)
+                if isinstance(parameters, (list, tuple)):
+                    required = list()
+                    properties = dict()
+                    for parameter in parameters:
+                        assert parameter['name'] not in properties
+                        properties[parameter['name']] = {
+                            key: parameter[key]
+                            for key in ('type', 'description', 'enum')
+                            if key in parameter
+                        }
+                        if parameter.get('required', False):
+                            required.append(parameter['name'])
+                        f = f.copy()
+                        f['parameters'] = {"type": "object", "properties": properties, "required": required}
+                        new_functions.append({'type': 'function', 'function': f})
+            functions = new_functions
         if functions:
             generate_cfg['tools'] = functions
         if stream:
