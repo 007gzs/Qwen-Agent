@@ -21,11 +21,15 @@ def chat():
     if 'messages' not in data:
         return jsonify({"status": 400}), 400
     messages = data['messages']
+    kwargs = dict()
+    functions = data.get("functions", None)
+    if isinstance(functions, list):
+        kwargs['functions'] = functions
     stream = data.get("stream", False)
     if stream:
-        return Response(event_stream(app.chat.chat(messages, stream)), mimetype='text/event-stream')
+        return Response(event_stream(app.chat.chat(messages, stream, **kwargs)), mimetype='text/event-stream')
     else:
-        return jsonify({"messages": list(app.chat.chat(messages, stream))}), 200
+        return jsonify({"messages": list(app.chat.chat(messages, stream, **kwargs))}), 200
 
 
 def start_apiserver(chat, server_host='0.0.0.0', server_port=8080):

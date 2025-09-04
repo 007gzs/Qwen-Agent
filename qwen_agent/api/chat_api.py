@@ -16,15 +16,25 @@ class ChatApi:
         from .api_server import start_apiserver
         start_apiserver(self, server_name, server_port)
 
-    def add_type(self, item):
+    def get_type(self, item):
+        chunk = 'chunk' in item
         if 'function_call' in item:
-            item['type'] = 'function_call'
+            return 'function_call'
         elif item['role'] == 'function':
-            item['type'] = 'function_call_output'
-        elif 'chunk' in item:
-            item['type'] = 'chunk'
+            return 'function_call_output'
+        elif 'reasoning_content' in item and item['reasoning_content']:
+            if chunk:
+                return 'reasoning_chunk'
+            else:
+                return 'reasoning'
         else:
-            item['type'] = 'message'
+            if chunk:
+                return 'message_chunk'
+            else:
+                return 'message'
+
+    def add_type(self, item):
+        item['type'] = self.get_type(item)
         return item
 
     def gen_stream(self, response, add_full_msg=False):
@@ -32,25 +42,29 @@ class ChatApi:
         last_msg = ""
         for rsp in response:
             now = rsp[-1]
-            now_is_msg = 'function_call' not in now and now['role'] != 'function'
+            now_type = self.get_type(now)
             is_new_line = len(last) != len(rsp)
             if is_new_line and last:
                 res = self.add_type(last[-1])
                 last_msg = ''
-                if add_full_msg or res['type'] != 'message':
+                if add_full_msg or res['type'] not in ('message', 'reasoning'):
                     yield res
-            if now_is_msg:
-                msg = now['content']
+            content_key = {
+                "message": "content_key",
+                "reasoning": "reasoning_content"
+            }
+            if now_type in ('message', 'reasoning'):
+                msg = now[content_key[now_type]]
                 assert msg.startswith(last_msg)
                 stream_msg = msg[len(last_msg):]
-                yield self.add_type({'role': now['role'], 'content': '', 'chunk': stream_msg})
+                yield {'role': now['role'], 'content': '', 'reasoning_content': '', 'chunk': stream_msg, 'type': now_type}
                 last_msg = msg
             last = rsp
             
         if last:
             res = self.add_type(last[-1])
             last_msg = ''
-            if add_full_msg or res['type'] != 'message':
+            if add_full_msg or res['type'] not in ('message', 'reasoning'):
                 yield res
 
     def gen(self, response):
