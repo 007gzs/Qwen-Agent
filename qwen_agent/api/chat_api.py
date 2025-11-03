@@ -42,6 +42,9 @@ class ChatApi:
         last_msg = ""
         for rsp in response:
             now = rsp[-1]
+            if last and now == last[-1]:
+                last = rsp
+                continue
             now_type = self.get_type(now)
             is_new_line = len(last) != len(rsp)
             if is_new_line and last:
