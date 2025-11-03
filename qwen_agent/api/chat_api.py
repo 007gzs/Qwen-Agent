@@ -50,7 +50,7 @@ class ChatApi:
                 if add_full_msg or res['type'] not in ('message', 'reasoning'):
                     yield res
             content_key = {
-                "message": "content_key",
+                "message": "content",
                 "reasoning": "reasoning_content"
             }
             if now_type in ('message', 'reasoning'):
@@ -77,9 +77,9 @@ class ChatApi:
         if last:
             yield last[-1]
 
-    def chat(self, messages, stream=True):
-        response = self.agent.run(messages)
+    def chat(self, messages, stream=True, add_full_msg=False, **kwargs):
+        response = self.agent.run(messages, **kwargs)
         if stream:
-            return self.gen_stream(response)
+            return self.gen_stream(response, add_full_msg=add_full_msg)
         else:
             return self.gen(response)
