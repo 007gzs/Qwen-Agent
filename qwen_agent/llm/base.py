@@ -389,6 +389,46 @@ class BaseChatModel(ABC):
         for messages in messages_iter:
             yield self._convert_messages_to_target_type(messages, target_type)
 
+    def _format_function(self, function):
+        function = function.get('function', function)
+        parameters = function.get("parameters", None)
+        if parameters is None:
+            return {'type': 'function', 'function': function}
+        parameters_list = list()
+        if isinstance(parameters, (list, tuple)):
+            parameters_list = parameters
+        elif isinstance(parameters, dict):
+            ok = True
+            for key, _type in (
+                    ('type', str),
+                    ('properties', dict),
+                    ('required', list),
+            ):
+                if key not in parameters or not isinstance(parameters[key], _type):
+                    ok = False
+                    break
+            if not ok:
+                for k, v in parameters.items():
+                    assert 'name' not in v or v['name'] == name
+                    v['name'] = k
+                    parameters_list.append(v)
+        if not parameters_list:
+            return {'type': 'function', 'function': function}
+
+        required = list()
+        properties = dict()
+        for parameter in parameters_list:
+            properties[parameter['name']] = {
+                key: parameter[key]
+                for key in ('type', 'description', 'enum')
+                if key in parameter
+            }
+            if parameter.get('required', False):
+                required.append(parameter['name'])
+        f = function.copy()
+        f['parameters'] = {"type": "object", "properties": properties, "required": required}
+        return {'type': 'function', 'function': f}
+
     def raw_chat(
         self,
         messages: List[Union[Message, Dict]],
@@ -399,24 +439,7 @@ class BaseChatModel(ABC):
         if functions and functions[0].get('type') != 'function':
             new_functions = []
             for f in functions:
-                parameters = f.get("parameters", None)
-                if isinstance(parameters, (list, tuple)):
-                    required = list()
-                    properties = dict()
-                    for parameter in parameters:
-                        assert parameter['name'] not in properties
-                        properties[parameter['name']] = {
-                            key: parameter[key]
-                            for key in ('type', 'description', 'enum')
-                            if key in parameter
-                        }
-                        if parameter.get('required', False):
-                            required.append(parameter['name'])
-                        f = f.copy()
-                        f['parameters'] = {"type": "object", "properties": properties, "required": required}
-                        new_functions.append({'type': 'function', 'function': f})
-                else:
-                  new_functions.append(f)
+                new_functions.append(self._format_function(f))
             functions = new_functions
         if functions:
             generate_cfg['tools'] = functions
