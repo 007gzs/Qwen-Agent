@@ -415,6 +415,8 @@ class BaseChatModel(ABC):
                         f = f.copy()
                         f['parameters'] = {"type": "object", "properties": properties, "required": required}
                         new_functions.append({'type': 'function', 'function': f})
+                else:
+                  new_functions.append(f)
             functions = new_functions
         if functions:
             generate_cfg['tools'] = functions
